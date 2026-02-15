@@ -1,0 +1,1 @@
+{ "name": "vmrl-root", "private": true, "workspaces": ["packages/*"] }
