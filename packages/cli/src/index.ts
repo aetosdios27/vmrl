@@ -4,12 +4,18 @@ import { Command } from "commander";
 import { ethers } from "ethers";
 import simpleGit from "simple-git";
 import chalk from "chalk";
+import dotenv from "dotenv"; // You need to load your .env file
+dotenv.config();
 
 // --- CONFIGURATION ---
-const RPC_URL = "http://127.0.0.1:8545";
-// MAKE SURE THIS MATCHES YOUR DEPLOYED ADDRESS FROM THE PREVIOUS STEP
-const CONTRACT_ADDRESS = "0x5FbDB2315678afecb367f032d93F642f64180aa3";
-const PRIVATE_KEY = "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80";
+// 1. Point to the Public Testnet
+const RPC_URL = "https://sepolia.base.org";
+
+// 2. Use your NEW Deployed Address (from the 'forge create' output you just showed me)
+const CONTRACT_ADDRESS = "0xe0C0B432380a07177372d10DF61BAFedAB9D8367";
+
+// 3. Load Private Key from .env (DO NOT HARDCODE REAL KEYS)
+const PRIVATE_KEY = process.env.VMRL_PRIVATE_KEY;
 
 // The ABI
 const ABI = [
@@ -39,6 +45,10 @@ program
     try {
       console.log(chalk.blue("⚓ VMRL: Anchoring..."));
 
+      if (!PRIVATE_KEY) {
+        throw new Error("Missing VMRL_PRIVATE_KEY in .env file");
+      }
+
       // Check if git repo
       const isRepo = await git.checkIsRepo();
       if (!isRepo) throw new Error("Not a git repository!");
@@ -54,7 +64,7 @@ program
       const wallet = new ethers.Wallet(PRIVATE_KEY, provider);
       const contract = new ethers.Contract(CONTRACT_ADDRESS, ABI, wallet);
 
-      console.log(chalk.yellow("⏳ Posting to Ledger..."));
+      console.log(chalk.yellow("⏳ Posting to Base Sepolia..."));
 
       const artifactHash = ethers.id("fake-build-artifact");
 
@@ -68,6 +78,7 @@ program
 
       console.log(chalk.green("✅ Success! Transaction Hash:"));
       console.log(chalk.white(tx.hash));
+      console.log(chalk.dim("View on Explorer: https://sepolia.basescan.org/tx/" + tx.hash));
 
     } catch (error: any) {
       console.error(chalk.red("❌ Error:"), error.message || error);
