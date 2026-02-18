@@ -1,3 +1,0 @@
-alpha work
-fixing critical bug
-adding dashboard feature
