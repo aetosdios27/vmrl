@@ -8,7 +8,7 @@ import { createPublicClient, http, parseAbiItem } from "viem";
 import { baseSepolia } from "viem/chains";
 
 const CONTRACT_ADDRESS = "0xe0C0B432380a07177372d10DF61BAFedAB9D8367";
-const LOG_RANGE = BigInt(10000);
+const LOG_RANGE = BigInt(500000);
 
 const rpcClient = createPublicClient({
   chain: baseSepolia,
