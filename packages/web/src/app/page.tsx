@@ -301,7 +301,7 @@ export default function Home() {
   const caughtUp = nextBlock !== null && nextBlock > heads.latest;
 
   return (
-    <main className="page">
+    <main className="page" suppressHydrationWarning>
       <header className="topbar"><span className="logo">VMRL</span><a href="https://github.com/aetosdios27/vmrl" target="_blank" rel="noreferrer">GitHub</a><span className="network">{LOCAL_DEMO ? "Local EVM demo" : CHAIN_ID === 84532 ? "Base Sepolia" : `Chain ${CHAIN_ID}`} · latest block {heads.latest.toString()}</span></header>
       <section className="hero"><p className="eyebrow">Verification · Merkle · Receipt · Ledger</p><h1>VMRL <span>EXPLORER</span></h1><p>On-chain release receipts. Local artifact integrity. Your publisher trust policy.</p></section>
       {LOCAL_DEMO && <DemoGuide />}
