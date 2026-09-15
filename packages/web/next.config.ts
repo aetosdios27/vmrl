@@ -1,7 +1,7 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  /* config options here */
+  distDir: process.env.VMRL_LOCAL_DEMO === "1" ? ".next-demo" : ".next",
   reactCompiler: true,
 };
 
