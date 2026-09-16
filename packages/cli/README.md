@@ -40,9 +40,11 @@ From `packages/cli`, run `bun install`. The entry point is `bun run index.ts`; `
 | `VMRL_RPC_URL` | `https://sepolia.base.org` |
 | `VMRL_CHAIN_ID` | `84532` (Base Sepolia); checked against the RPC before reading or writing |
 | `VMRL_CONTRACT_ADDRESS` | `0xe0C0B432380a07177372d10DF61BAFedAB9D8367` |
-| `VMRL_PRIVATE_KEY` | Required only for `anchor`; funded publisher wallet on the selected chain |
+| `VMRL_PRIVATE_KEY` | Required only for `anchor`/`revoke`; funded publisher wallet on the selected chain |
+| `VMRL_KEYSTORE_FILE` | Alternative to `VMRL_PRIVATE_KEY`: an encrypted JSON keystore |
+| `VMRL_KEYSTORE_PASSWORD` | Required with `VMRL_KEYSTORE_FILE` |
 
-Use all three network settings for a different deployment. The configured address must contain the unchanged VMRL contract, not an arbitrary contract or proxy. Receipt absence detection depends on this contract's `Receipt[] public receipts` array occupying storage slot 0. The CLI checks that contract code exists, then reads array length and the exact receipt at the same block; an RPC error or contract revert is not reported as a missing receipt. Code presence does not authenticate the deployment: choose the contract and RPC independently.
+Use all three network settings for a different deployment. The configured address must contain the unchanged VMRL contract, not an arbitrary contract or proxy. The CLI checks that contract code exists, then counts receipts with the explicit `receiptCount()` function; against the original deployment, which predates it, it falls back to reading the `Receipt[] public receipts` array length at storage slot 0. It reads the exact receipt at the same block; an RPC error or contract revert is not reported as a missing receipt. Code presence does not authenticate the deployment: choose the contract and RPC independently.
 
 ## Anchor a release artifact
 
@@ -52,7 +54,7 @@ Run inside the release's Git working tree (use the absolute CLI entry path if th
 bun run index.ts anchor --repo owner/project --tag v1.2.3 --artifact /path/to/release.tar.gz
 ```
 
-All three options are required. The CLI streams the file through SHA-256, records Git `HEAD` as a left-zero-padded bytes32 SHA-1, and rejects staged or unstaged tracked changes. Untracked release files are allowed; they are not proof of a reproducible build. It checks the file for changes during hashing and rechecks Git afterward. Keep the release file and checkout unchanged for the operation. Git SHA-256 repositories are not supported.
+All three options are required. The CLI streams the file through SHA-256, records Git `HEAD` as a left-zero-padded bytes32 SHA-1, and rejects staged or unstaged tracked changes. Untracked release files are allowed; they are not proof of a reproducible build. It checks the file for changes during hashing and rechecks Git afterward. Keep the release file and checkout unchanged for the operation. Git SHA-256 repositories are not supported. Add `--verify-tag` to also require that `--tag` resolves to the current `HEAD` commit. The signing key may be a raw `VMRL_PRIVATE_KEY` or an encrypted keystore (`VMRL_KEYSTORE_FILE` + `VMRL_KEYSTORE_PASSWORD`).
 
 The command prints the actual transaction hash, waits for successful mining (one confirmation), and extracts the receipt ID from `NewReceipt`. Save that ID. Known networks also get the actual transaction explorer URL; custom networks do not get a guessed link. A submitted transaction alone is not reported as anchored.
 
@@ -72,9 +74,26 @@ Optionally check the declared source revision:
 bun run index.ts verify --repo owner/project --receipt 12 --artifact /path/to/release.tar.gz --trusted-signer 0xYourIndependentlyTrustedPublisherAddress --commit 0123456789abcdef0123456789abcdef01234567
 ```
 
-`--commit` accepts a 40-hex Git SHA-1 (optional `0x`) or its left-zero-padded 32-byte form. Verification needs neither a private key nor a Git repository. `--trusted-signer` is mandatory: without an explicitly selected publisher the CLI cannot report overall verification. It reads `receipts(id)` directly, never the first receipt matching a commit.
+`--commit` accepts a 40-hex Git SHA-1 (optional `0x`) or its left-zero-padded 32-byte form. Verification needs neither a private key nor a Git repository. `--trusted-signer` is mandatory: without an explicitly selected publisher the CLI cannot report overall verification. It reads `receipts(id)` directly, never the first receipt matching a commit. A receipt revoked by its signer is never reported as verified.
 
 Output separates chain/RPC status, repository and optional revision matches, file integrity, and publisher trust. Overall success means the local SHA-256 and requested metadata match the selected receipt signed by the supplied trusted address. If multiple checks fail, all results are printed; a metadata/digest mismatch takes precedence over publisher mismatch in the exit code.
+
+## List and revoke receipts
+
+```bash
+bun run index.ts list --repo owner/project --offset 0 --limit 20
+bun run index.ts revoke --receipt 12
+```
+
+`list` reads receipts from the configured contract and can filter by repository. `revoke` permanently revokes a receipt and must be signed by the publisher that posted it; the entrypoint requires a signing key (see `anchor`). Both accept `--json`.
+
+## Machine-readable output
+
+`anchor`, `verify`, `list`, and `revoke` accept `--json`, which prints a single JSON object on stdout and suppresses the human-readable lines. Error messages still go to stderr with the matching exit code, and `verify` emits its JSON result even when verification fails.
+
+## Retries
+
+Read calls (network, block number, code, storage, `receipts`, `receiptCount`) are retried up to four attempts with jittered exponential backoff and a 30-second timeout. Submissions and receipt waits are bounded but never retried, to avoid duplicate transactions.
 
 | Exit code | Meaning |
 | --- | --- |
@@ -85,6 +104,7 @@ Output separates chain/RPC status, repository and optional revision matches, fil
 | 5 | Untrusted publisher |
 | 6 | RPC/network unavailable, chain mismatch, missing contract code, or other operation failure |
 | 7 | Contract/transaction failure, reverted/replaced transaction, or missing expected mined event |
+| 8 | Selected receipt was revoked by its signer |
 
 ## Limits
 

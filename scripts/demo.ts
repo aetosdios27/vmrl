@@ -1,5 +1,5 @@
 import type { Subprocess } from "bun";
-import { mkdir, mkdtemp } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, rm, stat } from "node:fs/promises";
 import { createServer } from "node:net";
 import { createRequire } from "node:module";
 import { dirname, join, resolve } from "node:path";
@@ -72,6 +72,23 @@ const available = (port: number): Effect.Effect<void, DemoError> =>
     probe.listen(port, "127.0.0.1", () => probe.close(error => error ? reject(error) : resolve()));
   }));
 
+// Generated builds are disposable; keep only the most recent runs so the directory cannot grow without bound.
+async function pruneRuns(base: string, keep: number) {
+  let entries;
+  try {
+    entries = await readdir(base, { withFileTypes: true });
+  } catch {
+    return;
+  }
+  const runs = await Promise.all(entries
+    .filter(entry => entry.isDirectory() && entry.name.startsWith("run-"))
+    .map(async entry => ({ name: entry.name, time: (await stat(join(base, entry.name))).mtimeMs })));
+  runs.sort((left, right) => left.time - right.time);
+  for (const stale of runs.slice(0, Math.max(0, runs.length - keep))) {
+    await rm(join(base, stale.name), { recursive: true, force: true });
+  }
+}
+
 const launch = Effect.gen(function* () {
   const rpcPort = yield* parsePort("VMRL_DEMO_RPC_PORT", 8545);
   const webPort = yield* parsePort("VMRL_DEMO_WEB_PORT", 3000);
@@ -118,6 +135,7 @@ const launch = Effect.gen(function* () {
   console.log(`Local-only EVM listening on 127.0.0.1:${rpcPort} (chain ${chainId}). No real funds or public chain used.`);
   yield* attempt(() => mkdir(directory, { recursive: true, mode: 0o700 }));
   const run = yield* attempt(() => mkdtemp(join(directory, "run-")));
+  yield* attempt(() => pruneRuns(directory, 5));
   const sourceDirectory = join(run, "source");
   yield* attempt(() => mkdir(sourceDirectory));
   yield* attempt(() => Bun.write(join(sourceDirectory, "app.ts"), 'const release = { application: "VMRL sample app", version: "0.2.0" };\nconsole.log(`${release.application} ${release.version}`);\n'));

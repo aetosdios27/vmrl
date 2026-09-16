@@ -1,66 +1,71 @@
-## Foundry
+# VMRL contracts
 
-**Foundry is a blazing fast, portable and modular toolkit for Ethereum application development written in Rust.**
+`src/VMRL.sol` is the on-chain receipt ledger: publishers anchor a
+`(repoId, tag, commitHash, artifactHash)` tuple and anyone can read it back.
 
-Foundry consists of:
+## Layout
 
-- **Forge**: Ethereum testing framework (like Truffle, Hardhat and DappTools).
-- **Cast**: Swiss army knife for interacting with EVM smart contracts, sending transactions and getting chain data.
-- **Anvil**: Local Ethereum node, akin to Ganache, Hardhat Network.
-- **Chisel**: Fast, utilitarian, and verbose solidity REPL.
+| Path | Purpose |
+| --- | --- |
+| `src/VMRL.sol` | Ledger contract |
+| `test/VMRL.test.ts` | Bun test suite that compiles with `solc` and exercises the real contract on Ganache |
+| `script/Deploy.s.sol` | Foundry deployment script |
+| `deployments.json` | Known deployments per chain |
 
-## Documentation
+## Interface
 
-https://book.getfoundry.sh/
+- `postReceipt(repoId, tag, commitHash, artifactHash)` — stores a receipt from `msg.sender` and returns its ID.
+- `postReceiptWithSig(..., signer, deadline, signature)` — EIP-712 relayed receipt, so a CI key can authorize without holding gas. The signer's `nonces(signer)` must match and `deadline` must be in the future.
+- `revokeReceipt(id)` — permanent revocation, callable only by the original signer.
+- `receiptCount()` — explicit receipt count (the `receipts` array stays at storage slot 0 for the original deployment).
+- `receipts(id)` — full receipt struct.
+- `getRepoReceipts(repoId)`, `getRepoReceiptCount(repoId)`, `getRepoReceiptsPaged(repoId, offset, limit)` — per-repository reads. Prefer the paged variant for large repositories.
+- `getReceiptsPaged(offset, limit)` — paged view of the whole ledger.
+- `verifyCommit(repoId, commitHash)` — returns `(bool, Receipt)` and ignores revoked receipts.
+- `revoked(id)`, `nonces(address)`, `domainSeparator()` — supporting state.
 
-## Usage
+`Receipt[] public receipts` remains the first storage variable, so the ABI and
+storage layout are unchanged from the original deployment.
 
-### Build
+## Build and test
 
-```shell
-$ forge build
+The test suite runs under Bun and compiles the contract with the `solc` npm
+package, so no Foundry install is required:
+
+```bash
+bun test packages/contracts/test/VMRL.test.ts
 ```
 
-### Test
+With Foundry installed:
 
-```shell
-$ forge test
+```bash
+forge build
+forge fmt
 ```
 
-### Format
+## Deploy
 
-```shell
-$ forge fmt
+```bash
+PRIVATE_KEY=0x... forge script script/Deploy.s.sol:DeployVMRL \
+  --rpc-url https://sepolia.base.org --broadcast
 ```
 
-### Gas Snapshots
+Record the resulting address in `deployments.json`, then point the CLI and web
+app at it with `VMRL_CONTRACT_ADDRESS` / `NEXT_PUBLIC_VMRL_CONTRACT_ADDRESS`.
 
-```shell
-$ forge snapshot
+## Verify the source
+
+```bash
+forge verify-contract <address> src/VMRL.sol:VMRL \
+  --chain 84532 --etherscan-api-key "$ETHERSCAN_API_KEY"
 ```
 
-### Anvil
+## Known deployments
 
-```shell
-$ anvil
-```
+| Chain | Network | Address |
+| --- | --- | --- |
+| 84532 | Base Sepolia | `0xe0C0B432380a07177372d10DF61BAFedAB9D8367` |
 
-### Deploy
-
-```shell
-$ forge script script/Counter.s.sol:CounterScript --rpc-url <your_rpc_url> --private-key <your_private_key>
-```
-
-### Cast
-
-```shell
-$ cast <subcommand>
-```
-
-### Help
-
-```shell
-$ forge --help
-$ anvil --help
-$ cast --help
-```
+The original Base Sepolia deployment predates `receiptCount()`, revocation, and
+EIP-712 relay support. The CLI falls back to storage slot 0 for the count and
+treats receipts as non-revocable against that deployment.

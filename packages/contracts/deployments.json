@@ -1,0 +1,9 @@
+{
+  "84532": {
+    "name": "Base Sepolia",
+    "address": "0xe0C0B432380a07177372d10DF61BAFedAB9D8367",
+    "explorer": "https://sepolia.basescan.org",
+    "deploymentBlock": null,
+    "note": "Original deployment. It predates receiptCount(), revocation, and EIP-712 relay support; the CLI and web fall back to storage slot 0 for the receipt count and treat receipts as non-revocable."
+  }
+}

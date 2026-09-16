@@ -9,7 +9,8 @@ const RPC_URL = process.env.NEXT_PUBLIC_VMRL_RPC_URL || "https://sepolia.base.or
 const START_BLOCK_TEXT = process.env.NEXT_PUBLIC_VMRL_START_BLOCK;
 const LOCAL_DEMO = process.env.NEXT_PUBLIC_VMRL_LOCAL_DEMO === "1";
 const LOG_RANGE = BigInt(2000);
-const rpcClient = createPublicClient({ transport: http(RPC_URL) });
+const MAX_HASH_BYTES = 256 * 1024 * 1024;
+const rpcClient = createPublicClient({ transport: http(RPC_URL, { retryCount: 3, retryDelay: 300 }) });
 const eventAbi = parseAbiItem("event NewReceipt(string indexed repoId, bytes32 indexed commitHash, address indexed signer, uint256 receiptId)");
 const receiptAbi = [parseAbiItem("function receipts(uint256) view returns (string repoId, string tag, bytes32 commitHash, bytes32 artifactHash, uint64 timestamp, address signer)")];
 type Receipt = {
@@ -25,8 +26,8 @@ function chainStatus(blockNumber: bigint, heads: Heads) {
   return "Included · finality not established";
 }
 
-function timeAgo(timestamp: bigint): string {
-  const s = Math.max(0, Math.floor(Date.now() / 1000) - Number(timestamp));
+function timeAgo(timestamp: bigint, now: number): string {
+  const s = Math.max(0, Math.floor(now / 1000) - Number(timestamp));
   if (s < 60) return `${s}s ago`;
   if (s < 3600) return `${Math.floor(s / 60)}m ago`;
   if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
@@ -40,6 +41,34 @@ function errorMessage(error: unknown) {
 // Quote on-chain strings as data, never shell syntax.
 function shellQuote(value: string) {
   return "'" + value.replaceAll("'", "'\\''") + "'";
+}
+
+function hashInWorker(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const worker = new Worker(new URL("./hash.worker.ts", import.meta.url));
+    const timer = setTimeout(() => { worker.terminate(); reject(new Error("Hashing worker timed out.")); }, 120000);
+    worker.onmessage = (event: MessageEvent<{ ok: boolean; hex?: string; error?: string }>) => {
+      clearTimeout(timer);
+      worker.terminate();
+      if (event.data.ok && event.data.hex) resolve(event.data.hex);
+      else reject(new Error(event.data.error ?? "Hashing worker failed."));
+    };
+    worker.onerror = () => { clearTimeout(timer); worker.terminate(); reject(new Error("Hashing worker failed to start.")); };
+    worker.postMessage(file);
+  });
+}
+
+// Prefer a worker so hashing never blocks rendering; fall back to the main thread.
+async function hashFile(file: File): Promise<string> {
+  if (file.size > MAX_HASH_BYTES) {
+    throw new Error(`Artifact exceeds the ${Math.floor(MAX_HASH_BYTES / (1024 * 1024))} MB in-browser limit. Verify it with the CLI instead.`);
+  }
+  if (typeof Worker !== "undefined") {
+    try { return await hashInWorker(file); } catch { /* fall back below */ }
+  }
+  const bytes = await file.arrayBuffer();
+  const hash = await window.crypto.subtle.digest("SHA-256", bytes);
+  return "0x" + Array.from(new Uint8Array(hash), byte => byte.toString(16).padStart(2, "0")).join("");
 }
 
 function ReceiptModal({ receipt, heads, onClose }: { receipt: Receipt; heads: Heads; onClose: () => void }) {
@@ -76,11 +105,9 @@ function ReceiptModal({ receipt, heads, onClose }: { receipt: Receipt; heads: He
     setHashing(true);
     try {
       if (!window.crypto?.subtle) throw new Error("Web Crypto is unavailable. Open this page over HTTPS or localhost.");
-      const bytes = await selected.arrayBuffer();
+      const computed = await hashFile(selected);
       if (current !== token.value) return;
-      const hash = await window.crypto.subtle.digest("SHA-256", bytes);
-      if (current !== token.value) return;
-      setDigest("0x" + Array.from(new Uint8Array(hash), byte => byte.toString(16).padStart(2, "0")).join(""));
+      setDigest(computed);
     } catch (cause) {
       if (current === token.value) setError(`Could not hash artifact: ${errorMessage(cause)}`);
     } finally {
@@ -205,6 +232,7 @@ export default function Home() {
   const [search, setSearch] = useState("");
   const [selected, setSelected] = useState<Receipt | null>(null);
   const [direction, setDirection] = useState<"asc" | "desc">("desc");
+  const [now, setNow] = useState(0);
   const busy = useRef(false);
   const alive = useRef(true);
   const requestedFrom = useRef<bigint | null>(null);
@@ -260,16 +288,31 @@ export default function Home() {
       const end = start + LOG_RANGE - BigInt(1) < latest ? start + LOG_RANGE - BigInt(1) : latest;
       const logs = await rpcClient.getLogs({ address: CONTRACT_ADDRESS, event: eventAbi, fromBlock: start, toBlock: end, strict: true });
       const page: Receipt[] = [];
-      // Small hydration batches bound simultaneous RPC requests, even for a busy range.
-      for (let offset = 0; offset < logs.length; offset += 8) {
-        const batch = await Promise.all(logs.slice(offset, offset + 8).map(async log => {
-          if (log.blockNumber === null || log.transactionHash === null) throw new Error("RPC returned a pending event for a historical range.");
-          const record = await rpcClient.readContract({ address: CONTRACT_ADDRESS, abi: receiptAbi, functionName: "receipts", args: [log.args.receiptId] });
-          const [repoId, tag, commitHash, artifactHash, timestamp, signer] = record;
-          return { repoId, tag, commitHash, artifactHash, timestamp, signer, id: log.args.receiptId.toString(), blockNumber: log.blockNumber, transactionHash: log.transactionHash };
-        }));
-        page.push(...batch);
-        if (!alive.current) return;
+      const entries = logs.map(log => {
+        if (log.blockNumber === null || log.transactionHash === null) throw new Error("RPC returned a pending event for a historical range.");
+        return { id: log.args.receiptId as bigint, blockNumber: log.blockNumber, transactionHash: log.transactionHash };
+      });
+      const build = (record: readonly unknown[], entry: (typeof entries)[number]): Receipt => {
+        const [repoId, tag, commitHash, artifactHash, timestamp, signer] = record as [string, string, `0x${string}`, `0x${string}`, bigint, string];
+        return { repoId, tag, commitHash, artifactHash, timestamp, signer, id: entry.id.toString(), blockNumber: entry.blockNumber, transactionHash: entry.transactionHash };
+      };
+      // Public chains hydrate in one Multicall3 eth_call; the local demo has no Multicall3 and reads in bounded batches.
+      let hydrated = false;
+      if (!LOCAL_DEMO && entries.length > 0) {
+        try {
+          const results = await rpcClient.multicall({ contracts: entries.map(entry => ({ address: CONTRACT_ADDRESS, abi: receiptAbi, functionName: "receipts" as const, args: [entry.id] })), allowFailure: false });
+          results.forEach((record, index) => page.push(build(record as readonly unknown[], entries[index]!)));
+          hydrated = true;
+        } catch {
+          // Fall back to bounded individual reads below.
+        }
+      }
+      if (!hydrated) {
+        for (let offset = 0; offset < entries.length; offset += 8) {
+          const batch = await Promise.all(entries.slice(offset, offset + 8).map(async entry => build(await rpcClient.readContract({ address: CONTRACT_ADDRESS, abi: receiptAbi, functionName: "receipts", args: [entry.id] }) as readonly unknown[], entry)));
+          page.push(...batch);
+          if (!alive.current) return;
+        }
       }
       if (!alive.current) return;
       setReceipts(previous => {
@@ -292,6 +335,13 @@ export default function Home() {
     void loadPage(null);
     return () => { alive.current = false; };
   }, [loadPage]);
+
+  useEffect(() => {
+    const update = () => setNow(Date.now());
+    update();
+    const timer = setInterval(update, 30000);
+    return () => clearInterval(timer);
+  }, []);
 
   const query = search.trim().toLowerCase();
   const displayed = receipts.filter(receipt => [receipt.repoId, receipt.tag, receipt.commitHash, receipt.artifactHash, receipt.signer, receipt.id].some(value => value.toLowerCase().includes(query))).sort((a, b) => {
@@ -324,7 +374,7 @@ export default function Home() {
           <p role="status">{loading ? "Fetching receipts from the configured RPC…" : caughtUp && !error ? "History loaded through the last observed tip. Refresh to check for new receipts." : "History is partial until all pages are loaded."}</p>
         </div>
         <div className="table-wrap"><table><thead><tr><th scope="col" aria-sort={direction === "asc" ? "ascending" : "descending"}><button type="button" onClick={() => setDirection(direction === "asc" ? "desc" : "asc")}>ID {direction === "asc" ? "↑" : "↓"}</button></th><th scope="col">Repository / tag</th><th scope="col">Declared revision</th><th scope="col">Signer</th><th scope="col">Chain status</th><th scope="col">Anchored</th><th scope="col">Action</th></tr></thead>
-          <tbody>{displayed.map(receipt => <tr key={receipt.id}><td className="receipt-id">#{receipt.id}</td><td><strong>{receipt.repoId}</strong><span className="subline">{receipt.tag}</span></td><td><code title={receipt.commitHash}>{receipt.commitHash.slice(0, 12)}…</code></td><td><code title={receipt.signer}>{receipt.signer.slice(0, 8)}…{receipt.signer.slice(-4)}</code></td><td><span className="status-pill">{chainStatus(receipt.blockNumber, heads)}</span></td><td><time title={new Date(Number(receipt.timestamp) * 1000).toUTCString()}>{timeAgo(receipt.timestamp)}</time><span className="subline">Block {receipt.blockNumber.toString()}</span></td><td><button type="button" onClick={() => setSelected(receipt)} aria-label={`Verify receipt ${receipt.id} for ${receipt.repoId} ${receipt.tag}`}>Verify artifact</button></td></tr>)}</tbody>
+          <tbody>{displayed.map(receipt => <tr key={receipt.id}><td className="receipt-id">#{receipt.id}</td><td><strong>{receipt.repoId}</strong><span className="subline">{receipt.tag}</span></td><td><code title={receipt.commitHash}>{receipt.commitHash.slice(0, 12)}…</code></td><td><code title={receipt.signer}>{receipt.signer.slice(0, 8)}…{receipt.signer.slice(-4)}</code></td><td><span className="status-pill">{chainStatus(receipt.blockNumber, heads)}</span></td><td><time title={new Date(Number(receipt.timestamp) * 1000).toUTCString()}>{timeAgo(receipt.timestamp, now)}</time><span className="subline">Block {receipt.blockNumber.toString()}</span></td><td><button type="button" onClick={() => setSelected(receipt)} aria-label={`Verify receipt ${receipt.id} for ${receipt.repoId} ${receipt.tag}`}>Verify artifact</button></td></tr>)}</tbody>
         </table></div>
         {!loading && displayed.length === 0 && <p className="empty">{error ? "Receipts could not be loaded. Retry the failed page above." : search ? "No matching receipts in loaded history." : "No receipts in the blocks loaded so far. Continue loading historical pages."}</p>}
       </section>

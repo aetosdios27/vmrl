@@ -97,6 +97,18 @@ bun run packages/cli/index.ts verify --repo owner/project --receipt 12 \
 Add `--commit <sha>` to also check the declared source revision. Verification
 needs no private key or Git repository.
 
+List receipts, or revoke one you published:
+
+```bash
+bun run packages/cli/index.ts list --repo owner/project
+bun run packages/cli/index.ts revoke --receipt 12
+```
+
+`anchor`, `verify`, `list`, and `revoke` accept `--json` for scripting. `anchor`
+also accepts `--verify-tag` to require `--tag` to resolve to `HEAD`, and can sign
+from an encrypted keystore with `VMRL_KEYSTORE_FILE` + `VMRL_KEYSTORE_PASSWORD`
+instead of `VMRL_PRIVATE_KEY`. `verify` fails on revoked receipts.
+
 | Exit code | Meaning |
 | --- | --- |
 | 0 | Successful anchor, fully matched verification, or help/version |
@@ -106,6 +118,7 @@ needs no private key or Git repository.
 | 5 | Untrusted publisher |
 | 6 | RPC/network unavailable, chain mismatch, missing contract code |
 | 7 | Contract/transaction failure or missing expected mined event |
+| 8 | Receipt revoked by its signer |
 
 ## Web explorer
 
@@ -128,7 +141,9 @@ auto-filled from the receipt.
 
 `packages/contracts/src/VMRL.sol` stores a public `Receipt[] receipts` array
 (storage slot 0) and a `repoId` hash index. It exposes `postReceipt`,
-`getRepoReceipts`, and `verifyCommit`, and emits `NewReceipt`.
+`getRepoReceipts`, `verifyCommit`, plus `receiptCount`, paged getters,
+signer-only revocation, and EIP-712 relayed `postReceiptWithSig`. It emits
+`NewReceipt`.
 
 With Foundry installed:
 
@@ -136,6 +151,17 @@ With Foundry installed:
 forge build
 forge test
 ```
+
+## Development
+
+```bash
+bun test             # contract + CLI suites (compile with solc, run on local Ganache)
+bun run typecheck    # CLI and demo script
+bun run lint         # web ESLint
+```
+
+CI runs all three plus a production `next build` and a Foundry compile. See
+`.github/workflows/ci.yml`.
 
 ## Verification model
 

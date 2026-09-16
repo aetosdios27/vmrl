@@ -4,7 +4,10 @@
   "workspaces": ["packages/*"],
   "scripts": {
     "demo": "bun run scripts/demo.ts",
-    "demo:check": "bun run scripts/demo.ts check"
+    "demo:check": "bun run scripts/demo.ts check",
+    "test": "bun test",
+    "lint": "bun run --cwd packages/web lint",
+    "typecheck": "bunx tsc --noEmit -p packages/cli/tsconfig.json && bunx tsc --noEmit --strict --skipLibCheck --module preserve --moduleResolution bundler --target esnext --types bun scripts/demo.ts"
   },
   "devDependencies": {
     "@types/bun": "latest",
