@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createPublicClient, http, isAddress, parseAbiItem } from "viem";
+import { StaleGuard, checkRevocation, overallVerdict, revocationDisplay, type RevocationStatus, type RevocationReader } from "./revocation";
 
 const CONTRACT_ADDRESS = process.env.NEXT_PUBLIC_VMRL_CONTRACT_ADDRESS || "0xe0C0B432380a07177372d10DF61BAFedAB9D8367";
 const CHAIN_ID = Number(process.env.NEXT_PUBLIC_VMRL_CHAIN_ID || "84532");
@@ -80,6 +81,8 @@ function ReceiptModal({ receipt, heads, onClose }: { receipt: Receipt; heads: He
   const [error, setError] = useState("");
   const [trustedSigner, setTrustedSigner] = useState("");
   const [copyStatus, setCopyStatus] = useState("");
+  const [revocation, setRevocation] = useState<RevocationStatus | null>(null);
+  const staleGuard = useRef<StaleGuard>(new StaleGuard());
 
   useEffect(() => {
     const element = dialog.current!;
@@ -115,10 +118,34 @@ function ReceiptModal({ receipt, heads, onClose }: { receipt: Receipt; heads: He
     }
   };
 
+  useEffect(() => {
+    const guard = staleGuard.current;
+    const token = guard.begin();
+    setRevocation(null);
+    void checkRevocation(rpcClient as unknown as RevocationReader, CHAIN_ID, CONTRACT_ADDRESS, BigInt(receipt.id)).then(status => {
+      if (guard.isCurrent(token)) setRevocation(status);
+    });
+    return () => { guard.begin(); };
+  }, [receipt.id]);
+
   const policy = trustedSigner.trim();
   const validPolicy = isAddress(policy);
   const integrityMatches = digest !== "" && digest === receipt.artifactHash.toLowerCase();
   const signerMatches = validPolicy && policy.toLowerCase() === receipt.signer.toLowerCase();
+  const revocationDisplayState = revocationDisplay(revocation);
+  const revokedReceipt = revocation?.kind === "revoked";
+  const verdict = overallVerdict(integrityMatches, signerMatches, revocation);
+  const verdictText = revokedReceipt
+    ? "REVOKED — NOT VERIFIED"
+    : verdict
+      ? "Verified against this receipt and your publisher policy, with revocation checked on-chain."
+      : revocation?.kind === "unknown"
+        ? "Revocation status could not be determined from the RPC; without a revocation result the artifact is NOT VERIFIED."
+        : revocation?.kind === "legacy"
+          ? integrityMatches && signerMatches
+            ? "Verified against this receipt and your publisher policy. This registered legacy deployment has no revocation support."
+            : "Artifact not verified against integrity, publisher policy, and the legacy no-revocation status."
+          : "Artifact not verified against integrity and publisher policy, and revocation status.";
   const command = `VMRL_RPC_URL=${shellQuote(RPC_URL)} VMRL_CONTRACT_ADDRESS=${shellQuote(CONTRACT_ADDRESS)} VMRL_CHAIN_ID=${CHAIN_ID} bun run packages/cli/index.ts verify --repo ${shellQuote(receipt.repoId)} --receipt ${receipt.id} --artifact '<artifact-path>' --trusted-signer '<trusted-signer-address>'`;
 
   return (
@@ -153,8 +180,9 @@ function ReceiptModal({ receipt, heads, onClose }: { receipt: Receipt; heads: He
               <div><dt>Computed SHA-256</dt><dd><code>{hashing ? "Hashing locally…" : digest || "Select an artifact"}</code></dd></div>
               <div><dt>Artifact integrity</dt><dd className={digest ? integrityMatches ? "success" : "failure" : ""}>{hashing ? "Checking…" : !digest ? "Not checked" : integrityMatches ? "MATCH — file digest equals this receipt" : "MISMATCH — file differs from this receipt"}</dd></div>
               <div><dt>Publisher trust</dt><dd className={policy ? signerMatches ? "success" : "failure" : ""}>{!policy ? "NOT CONFIGURED — no trusted publisher supplied" : !validPolicy ? "INVALID POLICY — enter a valid Ethereum address" : signerMatches ? "TRUSTED — signer matches your supplied address" : "UNTRUSTED — signer does not match your supplied address"}</dd></div>
+              <div><dt>Revocation status — on-chain, independent of integrity and publisher trust</dt><dd className={revocationDisplayState.tone === "success" ? "success" : revocationDisplayState.tone === "failure" ? "failure" : ""}>{revocationDisplayState.text}</dd></div>
             </dl>
-            <p className={integrityMatches && signerMatches ? "success" : ""}>{integrityMatches && signerMatches ? "Artifact verified against this receipt and your publisher policy." : "Artifact not verified against both integrity and publisher policy."}</p>
+            <p className={verdict ? "success" : revokedReceipt ? "failure" : ""}>{verdictText}</p>
           </div>
           {error && <p role="alert" className="failure">{error}</p>}
           <p className="boundary">A receipt records a publisher’s claim. It does not prove the artifact was built from the declared source, or that the software is safe.</p>
