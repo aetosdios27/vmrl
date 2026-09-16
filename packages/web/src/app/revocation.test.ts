@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
 import {
   StaleGuard,
   checkRevocation,
@@ -81,6 +82,29 @@ describe("checkRevocation", () => {
     expect(isLegacyDeployment(LEGACY_CHAIN_ID, LEGACY_ADDRESS.toLowerCase())).toBe(true);
     expect(isLegacyDeployment(1337, LEGACY_ADDRESS)).toBe(false);
     expect(isLegacyDeployment(LEGACY_CHAIN_ID, NONLEGACY_ADDRESS)).toBe(false);
+  });
+});
+
+describe("legacy deployment branching", () => {
+  // Regression: a legacy receipt with matching integrity and publisher trust
+  // must never be labeled VERIFIED in the UI; the fail-closed logic in
+  // overallVerdict already makes the verdict false, so the component message
+  // for that branch must not sound like success either.
+  const pageSource = new URL("./page.tsx", import.meta.url).pathname;
+  const source = () => readFileSync(pageSource, "utf8");
+
+  test("legacy status can never yield an overall verdict", () => {
+    expect(overallVerdict(true, true, { kind: "legacy" })).toBe(false);
+  });
+
+  test("the legacy-match message is factual, not success-sounding", () => {
+    expect(source()).toContain(
+      "Artifact integrity and publisher trust match. Revocation is unsupported on this legacy deployment; full verification is not established.",
+    );
+  });
+
+  test("the contradictory success wording is gone", () => {
+    expect(source()).not.toContain("Verified against this receipt and your publisher policy. This registered legacy deployment has no revocation support.");
   });
 });
 

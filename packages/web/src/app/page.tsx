@@ -143,7 +143,7 @@ function ReceiptModal({ receipt, heads, onClose }: { receipt: Receipt; heads: He
         ? "Revocation status could not be determined from the RPC; without a revocation result the artifact is NOT VERIFIED."
         : revocation?.kind === "legacy"
           ? integrityMatches && signerMatches
-            ? "Verified against this receipt and your publisher policy. This registered legacy deployment has no revocation support."
+            ? "Artifact integrity and publisher trust match. Revocation is unsupported on this legacy deployment; full verification is not established."
             : "Artifact not verified against integrity, publisher policy, and the legacy no-revocation status."
           : "Artifact not verified against integrity and publisher policy, and revocation status.";
   const command = `VMRL_RPC_URL=${shellQuote(RPC_URL)} VMRL_CONTRACT_ADDRESS=${shellQuote(CONTRACT_ADDRESS)} VMRL_CHAIN_ID=${CHAIN_ID} bun run packages/cli/index.ts verify --repo ${shellQuote(receipt.repoId)} --receipt ${receipt.id} --artifact '<artifact-path>' --trusted-signer '<trusted-signer-address>'`;
